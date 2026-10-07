@@ -1,124 +1,197 @@
 import { setup, createActor, fromPromise, assign } from "xstate";
+import { createServer } from "node:http"; // for gesture with audio
+import { readFile } from "node:fs/promises";
 
 const FURHATURI = "127.0.0.1:54321"; // this says where the furhats api lives
+const AUDIO_URL = "http://127.0.0.1:8765/beep.wav"; // beep sound
 
-async function fhVoice(name: string) {
+createServer(async (_req, res) => { // creating a tiny web server that gives furhat access to the beep.wav file
+  try {
+    const audio = await readFile("./audio/beep.wav");
+    res.writeHead(200, {
+      "Content-Type": "audio/wav",
+      "Content-Length": audio.length,
+    });
+    res.end(audio);
+
+  } catch (error) { // if we face error and there was no file
+    console.error("Could not load audio file:", error);
+    res.writeHead(500); // 500 means sth went wrong on the server
+    res.end("Could not load audio file"); // we send error respond instead of the file
+  }
+}).listen(8765, "127.0.0.1"); // and this starts the server
+
+
+// ------------- Helper Functions 
+async function fhAttend() { // for attending user
+  const headers = new Headers({accept: "application/json",});
+  const response = await fetch(`http://${FURHATURI}/furhat/attend?user=CLOSEST`, // so attend to the closest detected user
+    {
+      method: "POST",
+      headers,
+      body: "",
+    });
+  const result = await response.json(); // read furhat response
+  return result;
+}
+
+async function fhVoice(name: string) { // u give function a voice name 
   const myHeaders = new Headers();
-  myHeaders.append("accept", "application/json");
-  const encName = encodeURIComponent(name);
+  myHeaders.append("accept", "application/json"); // response in json format
+  const encName = encodeURIComponent(name); // to put the voicee name into a safe form for putting inside a URL
   return fetch(`http://${FURHATURI}/furhat/voice?name=${encName}`, {
-    method: "POST",
+    method: "POST", // sending an http post command to furhat
     headers: myHeaders,
     body: "",
   });
 }
 
-async function fhSay(text: string) { // send some text to furhat and ask furhat to speak it
+async function fhSay(text: string) { // speak
+  // to make furhat speak
+  await fhLed(0, 0, 255); // speaking = blue
   const myHeaders = new Headers();
   myHeaders.append("accept", "application/json");
-  const encText = encodeURIComponent(text);
-  return fetch(`http://${FURHATURI}/furhat/say?text=${encText}&blocking=true`, {
-    method: "POST",
-    headers: myHeaders,
-    body: "",
-  });
+   // speaks
+  const res = await fetch(`http://${FURHATURI}/furhat/say?text=${encodeURIComponent(text)}&blocking=true`, // when blocking is true it means wait until furhat has finished speaking before continuing
+    { method: "POST", 
+      headers: myHeaders, 
+      body: "" },
+  );
+  await fhLed(0, 0, 0); // to turn the led off
+  return res;
 }
 
-async function newGesture() {
+async function newGesture() { // smile gesture
   const myHeaders = new Headers();
   myHeaders.append("accept", "application/json");
-  return fetch(`http://${FURHATURI}/furhat/gesture?blocking=false`, {
+  myHeaders.append("Content-Type", "application/json");
+  return fetch(`http://${FURHATURI}/furhat/gesture?blocking=true`, {
     method: "POST",
     headers: myHeaders,
     body: JSON.stringify({
-      name: "newGesture",
-      frames: [
+      name: "cheekySmile", // we name it this
+      frames: [ // to describe the gesture
         {
-          time: [], //ADD THE TIME FRAME OF YOUR LIKING
-          persist: true,
+          time: [0.4, 1.6],
+          persist: false,
           params: {
-            //ADD PARAMETERS HERE IN ORDER TO CREATE A GESTURE
+            SMILE_OPEN: 0.7, // smile with open mouth
+            BROW_UP_LEFT: 1.0, // raises the left eyebrow
+            BROW_UP_RIGHT: 0.1, // slightly raise the right eyebrow
+            NECK_ROLL: 12, // roll the head slightly
+            LOOK_UP: 0.4,
           },
         },
-        {
-          time: [], //ADD TIME FRAME IN WHICH YOUR GESTURE RESETS
-          persist: true,
-          params: {
-            reset: true,
-          },
-        },
-        //ADD MORE TIME FRAMES IF YOUR GESTURE REQUIRES THEM
+        { time: [2.2], 
+          persist: true, 
+          params: { reset: true } 
+        }, // to reset the gesture, return the face/head toward the neutral/default state
       ],
-      class: "furhatos.gestures.Gesture",
+      class: "furhatos.gestures.Gesture", // interpret the json Im sending as a furhat gesture
     }),
   });
 }
 
-async function fhGesture(text: string) { // lets you trigger an existing named furhat gesture
+async function fhListen() { // listen
+  await fhLed(0, 255, 0); // listening = green
   const myHeaders = new Headers();
   myHeaders.append("accept", "application/json");
-  return fetch(
-    `http://${FURHATURI}/furhat/gesture?name=${text}&blocking=true`,
-    {
-      method: "POST",
-      headers: myHeaders,
-      body: "",
+
+  try {
+    const response = await fetch(`http://${FURHATURI}/furhat/listen?language=en-US`, // sending the listen request
+      {
+        method: "GET",
+        headers: myHeaders,
+      });
+
+    const result = await response.json();
+    const msg = result.message;
+
+    // to handle cases where there was no proper speech
+    if ( msg === "SILENCE" || msg === "INTERRUPTED" || msg === "FAILED") {
+      return "";
+    }
+    return typeof msg === "string" ? msg : ""; // if the msg was string return the msg otherwise return empty string
+  } finally { // when the listening operation ends
+    await fhLed(0, 0, 0); // so turning the led off
+  }
+}
+
+async function fhLed(red: number, green: number, blue: number) { // LED
+  return fetch(`http://${FURHATURI}/furhat/led?red=${red}&green=${green}&blue=${blue}`,
+    { method: "POST", 
+      headers: { accept: "application/json" }, 
+      body: "" },
+  );
+}
+
+async function fhPlayAudio(url: string) {  // to play the wav file
+  return fetch(`http://${FURHATURI}/furhat/say?url=${encodeURIComponent(url)}&blocking=true`,
+    { 
+      method: "POST", 
+      headers: { accept: "application/json" }, 
+      body: "" 
     },
   );
 }
 
-async function fhListen() { // it listens and then returns the recognized utterance
-  await fhLed(0, 255, 0); //a3, listening is green
-  const myHeaders = new Headers();
-  myHeaders.append("accept", "application/json");
-  try {
-    const response = await fetch(`http://${FURHATURI}/furhat/listen`, {
-      method: "GET",
-      headers: myHeaders,
-    });
-    const { value } = await response.body!.getReader().read();
-    const msg = JSON.parse(new TextDecoder().decode(value)).message;
-    return typeof msg === "string" ? msg : "";
-  } finally {
-    await fhLed(0, 0, 0);
-  }
-}
-
-async function fhAttend() { // for user tracking
-  const h = new Headers({ accpet: "application/json" })
-  const users = await fetch(`http://${FURHATURI}/furhat/users`, { headers: h }).then((r) => r.json()).catch(() => []);
-  const target = Array.isArray(users) && users.length > 0 ? "user=CLOSEST" : "location=0.2,0,1"; // fallback if no virtual user exists
-
-  console.log("Attending:", target);
-  return fetch(`http://${FURHATURI}/furhat/attend?${target}`, {
+async function surpriseWithSound() { // second gesture
+  const gesture = fetch(`http://${FURHATURI}/furhat/gesture?blocking=true`, {
     method: "POST",
-    headers: h,
-    body: "",
+    headers: {
+      accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "surpriseWithSound",
+      frames: [
+        {
+          time: [0.1, 1.0],
+          persist: false,
+          params: { 
+            SURPRISE: 1.0, 
+            BROW_UP_LEFT: 1.0, 
+            BROW_UP_RIGHT: 1.0, 
+            NECK_TILT: -8 
+          },
+        },
+        { time: [1.6], 
+          persist: true, 
+          params: { reset: true } 
+        },
+      ],
+      class: "furhatos.gestures.Gesture",
+    }),
   });
+  await Promise.all([gesture, fhPlayAudio(AUDIO_URL)]); // so start both asynchronous operations together and wait for both to finish
 }
 
+
+// ------------- DM
 const dmMachine = setup({
   types: {
     context: {} as { heard: string }
   },
   actors: {
-    fhVoice: fromPromise<any, null>(async () => {
+    fhVoice: fromPromise<any, null>(async () => { // voice actor
       return fhVoice("en-US-EchoMultilingualNeural");
     }),
-    fhHello: fromPromise<any, null>(async () => {
-      return fhSay("Hi");
-    }),
-    fhL: fromPromise<string, null>(async () => {
+    fhL: fromPromise<string, null>(async () => { // Listening actor
       return fhListen();
     }),
     fhAttend: fromPromise<any, null>(async () => fhAttend()), // actor for the user tracking thing I wrote
-    fhGreet: fromPromise<any, null>(async () => {
+    fhGreet: fromPromise<any, null>(async () => { // greeting actor
       await fhSay("Hello! I am Furhat.");
+      await newGesture();
       await fhSay("What would you like to say to me?");
     }),
-    fhEcho: fromPromise<any, { text: string }>(async ({ input }) => {
+    fhEcho: fromPromise<any, { text: string }>(async ({ input }) => { // echo actor
       if (!input.text) return fhSay("Sorry, I did not hear anything.");
       return fhSay(`You said: ${input.text}`);
+    }),
+    fhBye: fromPromise<any, null>(async () => { // goodbye actor
+      await surpriseWithSound();
+      await fhSay("That was fun. Goodbye!");
     }),
   },
 }).createMachine({
@@ -129,14 +202,17 @@ const dmMachine = setup({
   },
   states: {
     Start: {
-      after: { 1000: "SetVoice" }
+      after: { 1000: "SetVoice" } // so it stayes 1000 milliseconds then it goes to SetVoice
     },
     SetVoice: {
       invoke: {
         src: "fhVoice",
         input: null,
         onDone: "Attend",
-        onError: { target: "Fail", actions: ({ event }) => console.error(event) },
+        onError: { 
+          target: "Fail", 
+          actions: ({ event }) => console.error(event) 
+        },
       },
     },
     Attend: {
@@ -144,20 +220,63 @@ const dmMachine = setup({
         src: "fhAttend",
         input: null,
         onDone: "Greet",
-        onError: { target: "Fail", actions: ({ event }) => console.error(event) },
+        onError: { 
+          target: "Fail", 
+          actions: ({ event }) => console.error(event) 
+        },
       }
     },
     Greet: {
-
+      invoke: {
+        src: "fhGreet",
+        input: null,
+        onDone: "Listen",
+        onError: {
+          target: "Fail",
+          actions: ({ event }) => console.error(event)
+        },
+      },
     },
     Listen: {
-
+      invoke: {
+        src: "fhL",
+        input: null,
+        onDone: {
+          target: "Echo",
+          actions: [
+            ({ event }) => console.log("Heard:", event.output),
+            assign({ heard: ({ event }) => event.output }),
+          ],
+        },
+        onError: {
+          target: "Fail",
+          actions: ({ event }) => console.error(event)
+        },
+      },
     },
     Echo: {
-
+      invoke: {
+        src: "fhEcho",
+        input: ({ context }) => ({ text: context.heard }),
+        onDone: "Bye",
+        onError: { 
+          target: "Fail", 
+          actions: ({ event }) => console.error(event) 
+        },
+      },
+    },
+    Done: {
+      type: "final"
     },
     Bye: {
-
+      invoke: {
+        src: "fhBye",
+        input: null,
+        onDone: "Done",
+        onError: { 
+          target: "Fail", 
+          actions: ({ event }) => console.error(event) },
+      },
     },
     Fail: {},
   },
